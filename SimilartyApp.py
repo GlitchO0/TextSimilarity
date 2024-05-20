@@ -1,67 +1,84 @@
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-from flask import Flask, request, jsonify, render_template_string
-
-# Load the data from the CSV file
-csv_file = 'services.csv'
-data = pd.read_csv(csv_file)
-
-# Tokenize and vectorize the descriptions using TF-IDF
-tfidf_vectorizer = TfidfVectorizer(stop_words='english')
-tfidf_matrix = tfidf_vectorizer.fit_transform(data['description'])
+import re
+import string
+import json
+from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
+# Function to preprocess text (remove punctuation, lowercase, etc.)
+def preprocess_text(text):
+    text = text.lower()
+    text = re.sub(f"[{re.escape(string.punctuation)}]", "", text)
+    text = re.sub(r'\s+', ' ', text)
+    return text
 
-def find_similar_descriptions(user_description):
+# Function to collect user data from JSON
+def collect_user_data_from_json(json_input):
+    try:
+        data = json.loads(json_input)
+        if isinstance(data, list) and all(isinstance(item, dict) for item in data):
+            return data
+        else:
+            return None
+    except json.JSONDecodeError:
+        return None
+
+# Function to find similar descriptions
+def find_similar_descriptions(user_description, sample_data):
+    # Create a list to store descriptions
+    description_list = [item["description"] for item in sample_data]
+
+    # Preprocess all descriptions
+    preprocessed_descriptions = [preprocess_text(desc) for desc in description_list]
+
+    # Tokenize and vectorize the descriptions using TF-IDF
+    tfidf_vectorizer = TfidfVectorizer(stop_words='english', max_features=5000)
+    tfidf_matrix = tfidf_vectorizer.fit_transform(preprocessed_descriptions)
+
+    # Preprocess the user's description
+    user_description_processed = preprocess_text(user_description)
+
     # Vectorize the user's description
-    user_tfidf = tfidf_vectorizer.transform([user_description])
+    user_tfidf = tfidf_vectorizer.transform([user_description_processed])
 
-    # Calculate cosine similarity between user's description and all descriptions in the dataset
+    # Calculate cosine similarity between user's description and all descriptions in the list
     similarity_scores = cosine_similarity(user_tfidf, tfidf_matrix).flatten()
 
-    # Get the indices of the four most similar descriptions
-    sorted_indices = similarity_scores.argsort()[::-1][:4]
+    # Get the indices of the three most similar descriptions
+    sorted_indices = similarity_scores.argsort()[::-1][:7]
 
-    # Retrieve the four most similar descriptions and their cosine similarity scores
-    most_similar_descriptions = data.iloc[sorted_indices]['description'].tolist()
-    most_similar_jobs = data.iloc[sorted_indices]['job'].tolist()
-    most_similar_scores = similarity_scores[sorted_indices]
-
-    return most_similar_descriptions, most_similar_jobs, most_similar_scores
-
-
-@app.route('/')
-def home():
-    return render_template_string("""
-    <html>
-    <body>
-        <h1>Welcome to the Similar Descriptions Service</h1>
-        <p>Use the <code>/find_similar</code> endpoint to find similar descriptions.</p>
-    </body>
-    </html>
-    """)
-
-
-@app.route('/find_similar', methods=['POST'])
-def find_similar():
-    user_description = request.json.get('description')
-    if not user_description:
-        return jsonify({"error": "Description is required"}), 400
-
-    similar_descriptions, similar_jobs, similar_scores = find_similar_descriptions(user_description)
-
+    # Retrieve the three most similar descriptions and their cosine similarity scores
     results = []
-    for desc, job, score in zip(similar_descriptions, similar_jobs, similar_scores):
-        results.append({
-            "description": desc,
-            "job": job,
-            "similarity_score": score
-        })
+    for i in sorted_indices:
+        result = {
+            "description": description_list[i],
+            "ID": sample_data[i]["ID"],
+            "min_amount": sample_data[i]["min_amount"],
+            "max_amount": sample_data[i]["max_amount"],
+            "similarity_score": similarity_scores[i]
+        }
+        results.append(result)
 
-    return jsonify(results)
+    return results
 
+@app.route('/', methods=['POST'])
+def similarity_endpoint():
+    json_input = request.form.get('json_input')
+    user_description = request.form.get('user_description')
+
+    if not json_input or not user_description:
+        return jsonify({"error": "Missing json_input or user_description"}), 400
+
+    sample_data = collect_user_data_from_json(json_input)
+    if sample_data is None:
+        return jsonify({"error": "Invalid JSON format"}), 400
+
+    similar_descriptions = find_similar_descriptions(user_description, sample_data)
+
+    return jsonify(similar_descriptions)
 
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=5000,debug=True)
+    app.run(debug=True,host='0.0.0.0', port=5000)
